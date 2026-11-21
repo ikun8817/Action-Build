@@ -755,22 +755,6 @@ jobs:
           grep -nE '^(REPO_OWNER|REPO_NAME|REPO_BRANCH|KSU_VERSION_API|KSU_VERSION_FULL|VERSION_TAG|GIT_BIN|CURL_BIN)' kernel/Makefile
           echo "::endgroup::"
 
-          # built-in 模式下 kallsyms_common.h 会硬引用 kallsyms_on_each_symbol，
-          # 目标内核没有该符号时 vmlinux 链接期就会 undefined symbol。
-          # 强制改走运行期解析（原本只有 MODULE 模式才这么做）。
-          KSYM_H="$KSU_DIR/kernel/downstream/kallsyms_common.h"
-          if [ -f "$KSYM_H" ]; then
-            if grep -q '^#ifdef MODULE // lazy init' "$KSYM_H"; then
-              sed -i 's|^#ifdef MODULE // lazy init|#if 1 // forced runtime resolve (was #ifdef MODULE)|' "$KSYM_H"
-              echo "✅ kallsyms_common.h 已改为运行期解析"
-            else
-              echo "ℹ️ kallsyms_common.h 已是其他形态，未改动"
-              grep -n "lazy init" "$KSYM_H" || true
-            fi
-          else
-            echo "⚠️ 未找到 kallsyms_common.h，跳过"
-          fi
-
       - name: Apply Patches SukiSU Nova
         env:
           FILE: ${{ github.event.inputs.FILE }}
@@ -1256,6 +1240,26 @@ jobs:
             sed -i -E 's/(\bnext_path = )strchr\(s, '"'"':'"'"'\)/\1(char *)strchr(s, '"'"':'"'"')/' "$f"
             grep -nE '\(char \*\)(strstr|strchr)' "$f" || echo "✅ 匹配失败，当前云控ubuntu版本无需此操作"
           fi
+
+      # OnePlus sm8550 (5.15) 把 kallsyms_on_each_symbol 塞在 #ifdef CONFIG_LIVEPATCH 里，
+      # 而 gki_defconfig 没开 LIVEPATCH，符号根本不存在，KSU 一引用就 vmlinux 链接失败。
+      # 这里把那个函数的条件编译放开，让它正常编进内核。
+      - name: Force kallsyms_on_each_symbol available
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          F=kernel/kallsyms.c
+          if [ ! -f "$F" ]; then
+            echo "::warning title=kallsyms.c 未找到::跳过 LIVEATCH 放行"
+            exit 0
+          fi
+          if grep -qx '#ifdef CONFIG_LIVEPATCH' "$F"; then
+            # 只改第一处（该文件里这个条件只包着那一个函数），避免误开别的代码块
+            awk 'BEGIN{d=0} { if (!d && $0=="#ifdef CONFIG_LIVEPATCH") { print "#if 1 /* forced by CI: KSU needs kallsyms_on_each_symbol */"; d=1 } else print }' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+            echo "✅ 已放行 kallsyms_on_each_symbol（原条件: #ifdef CONFIG_LIVEPATCH）"
+          else
+            echo "ℹ️ 未找到预期的 #ifdef CONFIG_LIVEPATCH，可能上游已改，跳过"
+          fi
+          grep -n "kallsyms_on_each_symbol" "$F" | head -n 3
 
       - name: Build Kernel FAST
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
