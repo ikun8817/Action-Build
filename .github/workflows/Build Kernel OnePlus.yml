@@ -188,6 +188,7 @@ jobs:
       CCACHE_NOHARDLINK: "true"
       CCACHE_IS_KERNEL_COMPILING: "true"
       CCACHE_MAXSIZE: 5G
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -385,21 +386,13 @@ jobs:
       - name: Check Disk Space
         run: df -h
 
-      - name: Create and Enable 3G Swap
-        run: |
-          sudo swapoff -a
-          sudo fallocate -l 3G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
-
       - name: Set Cache Environment
         if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' }}
         run: |
-          echo "CCACHE_DIR=$HOME/.ccache_${{ github.event.inputs.FILE }}" >> $GITHUB_ENV
-          mkdir -p "$HOME/.ccache_${{ github.event.inputs.FILE }}"
-          echo "set: $HOME/.ccache_${{ github.event.inputs.FILE }}"
+          echo "TMPDIR=$GITHUB_WORKSPACE/.tmp" >> $GITHUB_ENV
+          mkdir -p "$CCACHE_DIR" "$GITHUB_WORKSPACE/.tmp"
+          echo "ccache: $CCACHE_DIR"
+          echo "tmpdir: $GITHUB_WORKSPACE/.tmp"
 
       - name: Fork Check
         run: |
@@ -431,8 +424,9 @@ jobs:
         run: |
           KOTLIN_VERSION="2.4.10"
           curl -sL "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o kotlinc.zip
-          unzip -q kotlinc.zip -d "$HOME"
-          echo "$HOME/kotlinc/bin" >> "$GITHUB_PATH"
+          mkdir -p "$GITHUB_WORKSPACE/.tools"
+          unzip -q kotlinc.zip -d "$GITHUB_WORKSPACE/.tools"
+          echo "$GITHUB_WORKSPACE/.tools/kotlinc/bin" >> "$GITHUB_PATH"
 
       - name: Setup Ccache-ECS
         run: |
@@ -445,7 +439,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.event.inputs.FILE }}-${{ env.BUILD_METHOD }}-${{ github.event.inputs.FAST_BUILD == 'true' && 'alpha' || 'beta' }}-17.0
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.event.inputs.FILE }}-${{ env.BUILD_METHOD }}-${{ github.event.inputs.FAST_BUILD == 'true' && 'alpha' || 'beta' }}-17.1
 
       - name: Restore ThinLTO Cache
         if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' && github.event.inputs.FAST_BUILD == 'true' }}
@@ -1248,6 +1242,10 @@ jobs:
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
         id: fast_build
         run: |
+          echo "=== 构建前磁盘 ==="
+          df -h / "$GITHUB_WORKSPACE" || true
+          echo "=== HOME 占用 ==="
+          du -sh "$HOME" "$HOME"/* 2>/dev/null | sort -h | tail -n 8 || true
           cd kernel_workspace/kernel_platform
 
           # 自动检测 LLVM_IAS
@@ -1659,7 +1657,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.event.inputs.FILE }}-${{ env.BUILD_METHOD }}-${{ github.event.inputs.FAST_BUILD == 'true' && 'alpha' || 'beta' }}-17.0
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.event.inputs.FILE }}-${{ env.BUILD_METHOD }}-${{ github.event.inputs.FAST_BUILD == 'true' && 'alpha' || 'beta' }}-17.1
 
       - name: Save ThinLTO Cache
         if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' && github.event.inputs.FAST_BUILD == 'true' && steps.cache_size_check.outputs.thinlto_save == 'true' && steps.restore-thinlto.outputs.cache-hit != 'true' }}
