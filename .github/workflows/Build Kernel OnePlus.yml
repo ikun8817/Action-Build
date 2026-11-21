@@ -1241,6 +1241,7 @@ jobs:
       - name: Build Kernel FAST
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
         id: fast_build
+        continue-on-error: true
         run: |
           echo "=== 构建前磁盘 ==="
           df -h / "$GITHUB_WORKSPACE" || true
@@ -1442,13 +1443,32 @@ jobs:
           fi
 
           make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
-          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
-          ccache -s
+
+          BUILD_LOG="$GITHUB_WORKSPACE/build.log"
+          set +e
+          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" 2>&1 | tee "$BUILD_LOG"
+          MAKE_RC=${PIPESTATUS[0]}
+          set -e
+          ccache -s || true
+          if [ "$MAKE_RC" -ne 0 ]; then
+            echo "::error title=Build Kernel FAST 编译失败::make 退出码 $MAKE_RC"
+            grep -aE "error:|Error [0-9]+|fatal error|No space left on device|Killed|out of memory|undefined reference|ld\.lld: error|cannot find" "$BUILD_LOG" 2>/dev/null \
+              | tr -d '\r' | cut -c1-300 | tail -n 8 \
+              | while IFS= read -r line; do echo "::error::$line"; done
+            echo "=== 失败时磁盘 ==="
+            df -h / "$GITHUB_WORKSPACE" || true
+            exit "$MAKE_RC"
+          fi
 
       - name: Fallback to Build Kernel
-        if: ${{ github.event.inputs.FAST_BUILD == 'false' || steps.fast_build.outputs.fallback == 'true' }}
+        if: ${{ github.event.inputs.FAST_BUILD == 'false' || steps.fast_build.outputs.fallback == 'true' || steps.fast_build.outcome == 'failure' }}
         run: |
           cd kernel_workspace
+          if [ "${{ steps.fast_build.outcome }}" = "failure" ]; then
+            echo "::warning title=FAST 构建失败::已自动回退官方构建脚本，FAST 的真实报错见上一步的 error 注解"
+            echo "清理 FAST 留下的半成品 out 目录，避免后续步骤误取 Image"
+            rm -rf kernel_platform/common/out
+          fi
           if [ -f ./kernel_platform/build_with_bazel.py ]; then
             ./kernel_platform/oplus/bazel/oplus_modules_variant.sh ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
             ./kernel_platform/build_with_bazel.py -t ${{ env.CPUD }} ${{ env.BUILD_METHOD }}
